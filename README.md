@@ -2,6 +2,10 @@
 
 **Instant open and close for Sway / SwayFX.** A dark placeholder with the app's icon appears the moment you launch or close a window, hiding the slow startup and shutdown of heavy apps.
 
+## Why?
+
+Sway often doesn't respond instantly when you open a heavy app. Sometimes the window takes a few seconds to appear, which makes the whole system feel slow even though nothing is wrong. This project shows a placeholder window the instant you press the key, so you get immediate feedback while the real app loads in the background.
+
 ![demo](demo.gif)
 
 ## Features
