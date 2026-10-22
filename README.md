@@ -10,8 +10,8 @@ Sway often doesn't respond instantly when you open a heavy app. Sometimes the wi
 
 ## Features
 
-- **Opening:** press Super+D, and a placeholder with the app name and icon shows immediately while the real app starts in the background. It disappears when the real window appears.
-- **Closing:** press Super+Q, and a placeholder covers the window's exact position and size while the app shuts down.
+- **Opening:** when you launch an app with `instant-launch` (Super+D in the example), a placeholder with the app name and icon shows immediately while the real app starts in the background. It disappears when the real window appears.
+- **Closing:** when you close a window with `instant-close` (Super+Q in the example), a placeholder covers the window's exact position and size while the app shuts down.
 - **Pre-started placeholder:** a hidden placeholder is kept running, so the closing placeholder shows with no startup delay.
 - **Safe:** the original window is only closed after the placeholder is in place. If anything fails, the app stays open.
 - Terminals are closed directly, with no placeholder.
@@ -32,6 +32,17 @@ cd sway-instant-response && ./install.sh
 ```
 
 The installer copies the files and prints the lines to add to `~/.config/sway/config`. It never edits your config. Then run `swaymsg reload`.
+
+## Custom keybindings
+
+Super+D and Super+Q are only examples. Bind the scripts to any keys you like in `~/.config/sway/config`:
+
+```
+bindsym $mod+Shift+q exec ~/.local/bin/instant-close
+bindsym $mod+Return exec ~/.local/bin/instant-launch
+```
+
+The closing placeholder appears only when a window is closed through `instant-close`. Closing with the window's own X button or Sway's plain `kill` skips it.
 
 ## Uninstall
 
