@@ -1,6 +1,6 @@
 # sway-instant-window
 
-**Instant open and close for Sway / SwayFX.** A dark placeholder with the app's icon appears the moment you launch or close a window, hiding slow startup and shutdown.
+**Instant open and close for Sway / SwayFX.** A dark placeholder with the app's icon appears the moment you launch or close a window, hiding the slow startup and shutdown of heavy apps.
 
 ![demo](demo.gif)
 
