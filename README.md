@@ -1,4 +1,4 @@
-# sway-instant-window
+# sway-instant-response
 
 **Instant open and close for Sway / SwayFX.** A dark placeholder with the app's icon appears the moment you launch or close a window, hiding the slow startup and shutdown of heavy apps.
 
@@ -27,8 +27,8 @@ Arch: `sudo pacman -S python python-gobject gtk4 wofi`
 ## Install
 
 ```bash
-git clone https://github.com/theanomalousphase/sway-instant-window
-cd sway-instant-window && ./install.sh
+git clone https://github.com/theanomalousphase/sway-instant-response
+cd sway-instant-response && ./install.sh
 ```
 
 The installer copies the files and prints the lines to add to `~/.config/sway/config`. It never edits your config. Then run `swaymsg reload`.
