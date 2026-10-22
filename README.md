@@ -2,7 +2,7 @@
 
 **Instant open and close for Sway / SwayFX.** A dark placeholder with the app's icon appears the moment you launch or close a window, hiding slow startup and shutdown.
 
-<!-- DEMO GIF GOES HERE: ![demo](demo.gif) -->
+![demo](demo.gif)
 
 ## Features
 
