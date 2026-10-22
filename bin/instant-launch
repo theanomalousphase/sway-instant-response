@@ -1,0 +1,294 @@
+#!/usr/bin/python
+import configparser
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import fcntl
+from pathlib import Path
+
+HOME = Path.home()
+SCRIPT = Path(__file__).resolve()
+BASE = HOME / ".local/share/instant-window"
+PLACEHOLDER = BASE / "placeholder.py"
+CACHE = HOME / ".cache/instant-window/apps.json"
+APP_DIRS = [
+    Path("/usr/share/applications"),
+    HOME / ".local/share/applications",
+]
+
+def sway_windows():
+    try:
+        tree = json.loads(subprocess.check_output(
+            ["swaymsg", "-r", "-t", "get_tree"],
+            text=True, stderr=subprocess.DEVNULL
+        ))
+    except Exception:
+        return {}
+
+    result, stack = {}, [tree]
+    while stack:
+        node = stack.pop()
+        if node.get("type") == "con" and node.get("id") is not None:
+            props = node.get("window_properties") or {}
+            if node.get("app_id") or props or node.get("pid"):
+                result[node["id"]] = {
+                    "app_id": node.get("app_id") or "",
+                    "class": props.get("class") or "",
+                    "instance": props.get("instance") or "",
+                    "title": node.get("name") or "",
+                    "pid": node.get("pid"),
+                }
+        stack.extend(node.get("nodes", []))
+        stack.extend(node.get("floating_nodes", []))
+    return result
+
+def get_icon(name):
+    if not name:
+        return ""
+    p = Path(name)
+    if p.is_file():
+        return str(p)
+    roots = [
+        Path("/usr/share/icons/hicolor"),
+        Path("/usr/share/icons"),
+        Path("/usr/local/share/icons"),
+        HOME / ".local/share/icons",
+        Path("/usr/share/pixmaps"),
+    ]
+    sizes = ["48x48/apps", "64x64/apps", "32x32/apps",
+             "128x128/apps", "256x256/apps", "scalable/apps", "apps"]
+    for root in roots:
+        for size in sizes:
+            for ext in (".png", ".svg", ".xpm"):
+                p = root / size / (name + ext)
+                if p.is_file():
+                    return str(p)
+        for ext in (".png", ".svg", ".xpm"):
+            p = root / (name + ext)
+            if p.is_file():
+                return str(p)
+    return ""
+
+def catalog_signature():
+    items = []
+    for directory in APP_DIRS:
+        if directory.exists():
+            for file in directory.glob("*.desktop"):
+                try:
+                    st = file.stat()
+                    items.append((str(file), st.st_mtime_ns, st.st_size))
+                except OSError:
+                    pass
+    return items
+
+def load_catalog():
+    signature = catalog_signature()
+    try:
+        data = json.loads(CACHE.read_text())
+        if data.get("signature") == signature:
+            return data["apps"]
+    except (OSError, ValueError, KeyError):
+        pass
+
+    apps = {}
+    for directory in APP_DIRS:
+        if not directory.exists():
+            continue
+        for file in directory.glob("*.desktop"):
+            cfg = configparser.ConfigParser(interpolation=None, strict=False)
+            cfg.optionxform = str
+            try:
+                cfg.read(file, encoding="utf-8")
+                entry = cfg["Desktop Entry"]
+                name = entry.get("Name", "").strip()
+                if (
+                    not name
+                    or file.stem in {"avahi-discover", "bssh", "bvnc", "lstopo"}
+                    or entry.get("Hidden", "false").lower() == "true"
+                    or entry.get("NoDisplay", "false").lower() == "true"
+                    or entry.get("Type", "Application") != "Application"
+                    or entry.get("OnlyShowIn", "").strip()
+                    or "org.gnome." in entry.get("Categories", "")
+                       and entry.get("NoDisplay", "false").lower() == "true"
+                ):
+                    continue
+                icon = get_icon(entry.get("Icon", ""))
+                line = f"img:{icon}:text:{name}" if icon else name
+                apps[line] = {
+                    "desktop_id": file.stem,
+                    "name": name,
+                    "startup_wm_class": entry.get("StartupWMClass", "").strip(),
+                }
+            except (KeyError, OSError, configparser.Error):
+                continue
+
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.write_text(json.dumps({
+        "signature": signature,
+        "apps": apps,
+    }))
+    return apps
+
+def normalize_id(value):
+    return "".join(c.lower() for c in value if c.isalnum())
+
+def monitor(before_ids, placeholder_pid, startup_class, desktop_id, app_name):
+    deadline = time.monotonic() + 12
+    targets = {
+        normalize_id(value)
+        for value in (startup_class, desktop_id, app_name)
+        if value
+    }
+
+    try:
+        while time.monotonic() < deadline:
+            current = sway_windows()
+            for wid, window in current.items():
+                if wid in before_ids:
+                    continue
+
+                identifiers = {
+                    normalize_id(window.get(key, ""))
+                    for key in ("app_id", "class", "instance")
+                    if window.get(key)
+                }
+
+                # Close only when a newly created window matches the
+                # selected app, not when an unrelated window appears.
+                if targets and identifiers.intersection(targets):
+                    return
+
+            time.sleep(0.15)
+    finally:
+        try:
+            os.kill(placeholder_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+if len(sys.argv) == 7 and sys.argv[1] == "--monitor":
+    monitor(
+        set(json.loads(sys.argv[2])),
+        int(sys.argv[3]),
+        sys.argv[4],
+        sys.argv[5],
+        sys.argv[6],
+    )
+    raise SystemExit(0)
+
+# Single-instance launcher: a second Super+D press closes the menu.
+LOCK = HOME / ".cache/instant-window/launcher.lock"
+LOCK.parent.mkdir(parents=True, exist_ok=True)
+lock_file = open(LOCK, "a+")
+
+try:
+    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    lock_file.seek(0)
+    owner = lock_file.read().strip()
+    if owner.isdigit():
+        try:
+            os.kill(int(owner), signal.SIGUSR1)
+        except ProcessLookupError:
+            pass
+    raise SystemExit(0)
+
+lock_file.seek(0)
+lock_file.truncate()
+lock_file.write(str(os.getpid()))
+lock_file.flush()
+
+wofi_proc = None
+
+def close_launcher_menu(signum, frame):
+    if wofi_proc is not None and wofi_proc.poll() is None:
+        wofi_proc.terminate()
+
+signal.signal(signal.SIGUSR1, close_launcher_menu)
+
+# Native Wofi drun mode avoids building and piping a custom app list.
+wofi_proc = subprocess.Popen(
+    [
+        "wofi", "--show", "drun",
+        "--define=drun-print_desktop_file=true",
+    ],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+stdout, _ = wofi_proc.communicate()
+selected = stdout.strip()
+
+if not selected:
+    raise SystemExit(0)
+
+try:
+    selected_path = Path(selected).absolute()
+    allowed_dirs = [
+        directory.resolve()
+        for directory in [
+            *APP_DIRS,
+            Path("/usr/local/share/applications"),
+            Path("/var/lib/flatpak/exports/share/applications"),
+            HOME / ".local/share/flatpak/exports/share/applications",
+            Path("/var/lib/snapd/desktop/applications"),
+        ]
+        if directory.exists()
+    ]
+    if not any(
+        selected_path.parent == directory
+        for directory in allowed_dirs
+    ):
+        raise SystemExit("Selected desktop file is outside the application directories.")
+
+    desktop_file = selected_path.resolve(strict=True)
+
+    cfg = configparser.ConfigParser(interpolation=None, strict=False)
+    cfg.optionxform = str
+    cfg.read(desktop_file, encoding="utf-8")
+    entry = cfg["Desktop Entry"]
+
+    desktop_id = desktop_file.stem
+    if desktop_id in {"avahi-discover", "bssh", "bvnc", "lstopo"}:
+        raise SystemExit(0)
+
+    app = {
+        "desktop_id": desktop_id,
+        "name": entry.get("Name", "").strip(),
+        "startup_wm_class": entry.get("StartupWMClass", "").strip(),
+    }
+    if not app["name"]:
+        raise SystemExit("Selected application has no valid name.")
+except (OSError, KeyError, configparser.Error) as exc:
+    raise SystemExit(f"Could not read selected desktop entry: {exc}")
+before_ids = list(sway_windows())
+
+placeholder = subprocess.Popen(
+    ["/usr/bin/python", str(PLACEHOLDER), app["name"]],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True
+)
+time.sleep(0.1)
+
+try:
+    subprocess.Popen(
+        ["gtk-launch", app["desktop_id"]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True
+    )
+except Exception:
+    placeholder.terminate()
+    raise
+
+subprocess.Popen(
+    ["/usr/bin/python", str(SCRIPT), "--monitor",
+     json.dumps(before_ids), str(placeholder.pid),
+     app.get("startup_wm_class", ""), app["desktop_id"], app["name"]],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True
+)

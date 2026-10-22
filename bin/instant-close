@@ -1,0 +1,132 @@
+#!/usr/bin/python
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+
+HOME = Path.home()
+WARM = HOME / ".local/share/instant-window/warm.py"
+PREFIX = "com.local.instantplaceholder."
+WARM_PREFIX = PREFIX + "w"
+SKIP = {
+    "alacritty", "kitty", "foot", "wezterm", "org.wezfurlong.wezterm",
+    "com.mitchellh.ghostty", "xterm", "org.gnome.terminal", "gnome-terminal-server",
+    "konsole", "org.kde.konsole",
+}
+
+
+def tree():
+    r = subprocess.run(["swaymsg", "-r", "-t", "get_tree"], capture_output=True, text=True, check=True)
+    return json.loads(r.stdout)
+
+
+def walk(n):
+    yield n
+    for c in n.get("nodes", []) + n.get("floating_nodes", []):
+        yield from walk(c)
+
+
+def find(t, cid):
+    return next((n for n in walk(t) if n.get("id") == cid), None)
+
+
+def find_warm(t):
+    return next((n for n in walk(t) if (n.get("app_id") or "").startswith(WARM_PREFIX)), None)
+
+
+def sh(cmd):
+    return subprocess.run(["swaymsg", cmd], capture_output=True, text=True, timeout=3)
+
+
+def spawn_warm():
+    subprocess.Popen(["/usr/bin/python", str(WARM)], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def hide(wid):
+    sh(f"[con_id={wid}] opacity 0, move container to workspace number 9")
+
+
+def main():
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    t = tree()
+    target = next((n for n in walk(t) if n.get("focused") and n.get("type") in ("con", "floating_con")), None)
+    if not target:
+        sys.exit("No focused application window found.")
+    app_id = target.get("app_id") or ""
+    if app_id.startswith(PREFIX):
+        sys.exit("The focused window is already a placeholder.")
+    if app_id.lower() in SKIP:
+        sh(f"[con_id={target['id']}] kill")
+        return
+
+    warm = find_warm(t)
+    if warm is None:
+        spawn_warm()  # ready for next time
+        sh(f"[con_id={target['id']}] kill")
+        return
+
+    con_id = target["id"]
+    title = target.get("name") or app_id or "application"
+    rect = target.get("rect") or {}
+    wr = target.get("window_rect") or {}
+    w = max(1, int(wr.get("width") or rect.get("width", 1920)))
+    h = max(1, int(wr.get("height") or rect.get("height", 1080)))
+    x = int(rect.get("x", 0)) + int(wr.get("x", 0))
+    y = int(rect.get("y", 0)) + int(wr.get("y", 0))
+
+    wid = warm["id"]
+    wpid = warm["app_id"][len(WARM_PREFIX):]
+    Path(f"/tmp/instant-warm-{wpid}.json").write_text(json.dumps({"name": title, "hint": app_id}))
+    try:
+        os.kill(int(wpid), signal.SIGUSR1)
+    except ProcessLookupError:
+        spawn_warm()
+        sh(f"[con_id={target['id']}] kill")
+        return
+    time.sleep(0.03)
+
+    revealed = False
+    try:
+        r = sh(f"[con_id={wid}] move container to workspace current, "
+               f"resize set width {w} px height {h} px, "
+               f"move absolute position {x} px {y} px, opacity 1")
+        revealed = True
+        if r.returncode != 0:
+            hide(wid)
+            revealed = False
+            sys.exit("Could not reveal placeholder; original window left open. " + r.stdout + r.stderr)
+
+        want = (x, y, w, h)
+        end = time.monotonic() + 1.0
+        while True:
+            rr = (find(tree(), wid) or {}).get("rect", {})
+            if (rr.get("x"), rr.get("y"), rr.get("width"), rr.get("height")) == want:
+                break
+            if time.monotonic() > end:
+                hide(wid)
+                revealed = False
+                sys.exit(f"Geometry mismatch {rr}; expected {want}. Original window left open.")
+            time.sleep(0.02)
+
+        r = sh(f"[con_id={con_id}] kill")
+        if r.returncode != 0:
+            sys.exit("Could not close the original window: " + r.stdout + r.stderr)
+
+        deadline = time.monotonic() + 15
+        grace = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if find(tree(), con_id) is None:
+                return
+            if time.monotonic() > grace:
+                return  # app is waiting on a dialog; remove placeholder
+            time.sleep(0.1)
+    finally:
+        if revealed:
+            sh(f"[con_id={wid}] kill")
+            end = time.monotonic() + 1
+            while time.monotonic() < end and find(tree(), wid) is not None:
+                time.sleep(0.05)
+            spawn_warm()
+
+
+if __name__ == "__main__":
+    main()
